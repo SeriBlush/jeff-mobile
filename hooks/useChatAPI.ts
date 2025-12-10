@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import ChatService from '../services/chatService';
 
 export interface ChatResponse {
   message: string;
@@ -6,9 +7,31 @@ export interface ChatResponse {
   error?: string;
 }
 
-export const useChatAPI = () => {
+export const useChatAPI = (apiKey: string) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatService, setChatService] = useState<ChatService | null>(null);
+
+  // Initialize chat service on mount or when API key changes
+  const initializeChatService = useCallback(() => {
+    if (!apiKey) {
+      setError('API key is required');
+      return false;
+    }
+    try {
+      const service = new ChatService({
+        apiKey: apiKey,
+        modelName: 'gemini-pro',
+      });
+      setChatService(service);
+      setError(null);
+      return true;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to initialize chat service';
+      setError(errorMessage);
+      return false;
+    }
+  }, [apiKey]);
 
   const sendMessage = useCallback(
     async (userMessage: string, mood?: string): Promise<ChatResponse> => {
@@ -16,31 +39,29 @@ export const useChatAPI = () => {
       setError(null);
 
       try {
-        // Simulated API call - replace with actual API endpoint
-        const response = await fetch('https://api.example.com/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: userMessage,
-            mood: mood || 'neutral',
-            timestamp: new Date().toISOString(),
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`API error: ${response.statusText}`);
+        // Initialize service if not already done
+        let service = chatService;
+        if (!service) {
+          const initialized = initializeChatService();
+          if (!initialized) {
+            throw new Error('Failed to initialize chat service');
+          }
+          // Get the newly initialized service
+          service = new ChatService({
+            apiKey: apiKey,
+            modelName: 'gemini-pro',
+          });
         }
 
-        const data = await response.json();
+        // Send message using the chat service
+        const response = await service.sendMessage(userMessage, mood);
 
         return {
-          message: data.reply || 'No response',
+          message: response.content,
           success: true,
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
         setError(errorMessage);
         return {
           message: errorMessage,
@@ -51,12 +72,13 @@ export const useChatAPI = () => {
         setIsLoading(false);
       }
     },
-    []
+    [apiKey, chatService, initializeChatService]
   );
 
   return {
     sendMessage,
     isLoading,
     error,
+    initializeChatService,
   };
 };
