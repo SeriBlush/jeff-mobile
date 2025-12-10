@@ -1,3 +1,5 @@
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -7,22 +9,23 @@ export interface ChatMessage {
 }
 
 export interface ChatServiceConfig {
-  apiEndpoint: string;
-  apiKey?: string;
-  timeout?: number;
+  apiKey: string;
+  modelName?: string;
 }
 
 class ChatService {
-  private apiEndpoint: string;
-  private apiKey?: string;
-  private timeout: number = 30000; // 30 seconds default
+  private client: GoogleGenerativeAI | null = null;
+  private modelName: string = 'gemini-pro';
   private messageHistory: ChatMessage[] = [];
+  private conversationHistory: Array<{ role: string; parts: string }> = [];
 
   constructor(config: ChatServiceConfig) {
-    this.apiEndpoint = config.apiEndpoint;
-    this.apiKey = config.apiKey;
-    if (config.timeout) {
-      this.timeout = config.timeout;
+    if (!config.apiKey) {
+      throw new Error('Google Gemini API key is required');
+    }
+    this.client = new GoogleGenerativeAI(config.apiKey);
+    if (config.modelName) {
+      this.modelName = config.modelName;
     }
   }
 
@@ -30,7 +33,12 @@ class ChatService {
     message: string,
     mood?: string,
   ): Promise<ChatMessage> {
+    if (!this.client) {
+      throw new Error('Chat client not initialized');
+    }
+
     try {
+      // Add user message to history
       const userMessage: ChatMessage = {
         id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         role: 'user',
@@ -40,55 +48,51 @@ class ChatService {
       };
 
       this.messageHistory.push(userMessage);
+      this.conversationHistory.push({
+        role: 'user',
+        parts: message,
+      });
 
-      // Make API call
-      const response = await this.fetchWithTimeout(
-        this.apiEndpoint,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
-          },
-          body: JSON.stringify({
-            message,
-            mood,
-            conversationId: this.getConversationId(),
-          }),
-        },
-      );
+      // Initialize the model
+      const model = this.client.getGenerativeModel({ model: this.modelName });
 
-      const data = await response.json();
+      // Prepare system prompt with mood context
+      const systemPrompt = mood
+        ? `You are Jeff, a helpful AI assistant. The user is currently feeling ${mood}. Be empathetic and supportive in your response.`
+        : 'You are Jeff, a helpful AI assistant. Provide thoughtful and supportive responses.';
 
+      // Use startChat for multi-turn conversation
+      const chat = model.startChat({
+        history: this.conversationHistory.map((msg) => ({
+          role: msg.role as 'user' | 'model',
+          parts: msg.parts,
+        })),
+      });
+
+      // Send message and get response
+      const result = await chat.sendMessage(message);
+      const response = await result.response;
+      const assistantText = response.text();
+
+      // Add assistant response to history
       const assistantMessage: ChatMessage = {
-        id: data.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         role: 'assistant',
-        content: data.reply || 'Unable to process your message',
+        content: assistantText,
         timestamp: new Date(),
       };
 
       this.messageHistory.push(assistantMessage);
+      this.conversationHistory.push({
+        role: 'model',
+        parts: assistantText,
+      });
+
       return assistantMessage;
     } catch (error) {
-      throw new Error(
-        `Chat service error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      );
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      throw new Error(`Chat service error: ${errorMessage}`);
     }
-  }
-
-  private getConversationId(): string {
-    // In a real app, this would be a proper conversation ID
-    return `conv_${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  private fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
-    return fetch(url, {
-      ...options,
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeoutId));
   }
 
   getMessageHistory(): ChatMessage[] {
@@ -96,6 +100,11 @@ class ChatService {
   }
 
   clearHistory(): void {
+    this.messageHistory = [];
+    this.conversationHistory = [];
+  }
+
+  clearMessageHistory(): void {
     this.messageHistory = [];
   }
 }
