@@ -30,7 +30,7 @@
     },
     "plugins": [
       "expo-av",
-      "expo-permissions"
+    
     ]
   }
 }
